@@ -135,6 +135,10 @@ namespace UAssetAPI
 
         /// <summary>
         /// Generates an unversioned header based on a list of properties, and sorts the list in the correct order to be serialized.
+        /// This implementation mirrors UE 5.5.4's FUnversionedHeaderBuilder pattern:
+        /// - Walks all schema properties in order, calling IncludeProperty/ExcludeProperty
+        /// - Finalize() trims trailing skip-only fragments
+        /// - TrimZeroMask removes zero-mask bits for fragments without any zeroes
         /// </summary>
         /// <param name="data">The list of properties to sort and generate an unversioned header from.</param>
         /// <param name="parentName">The name of the parent of all the properties.</param>
@@ -142,121 +146,94 @@ namespace UAssetAPI
         /// <param name="asset">The UAsset which the properties are contained within.</param>
         public static FUnversionedHeader GenerateUnversionedHeader(ref List<PropertyData> data, FName parentName, FName parentModulePath, UAsset asset)
         {
-            var sortedProps = new List<PropertyData>();
-            if (!asset.HasUnversionedProperties) return null; // no point in wasting time generating it
+            if (!asset.HasUnversionedProperties) return null;
             if (asset.Mappings == null) return null;
 
-            int firstNumAll = int.MaxValue;
-            int lastNumAll = int.MinValue;
-            HashSet<int> propertiesToTouch = new HashSet<int>();
+            // Build a map from schema index -> PropertyData for all properties we want to serialize
             Dictionary<int, PropertyData> propMap = new Dictionary<int, PropertyData>();
             HashSet<int> zeroProps = new HashSet<int>();
             foreach (PropertyData entry in data)
             {
-                if (!asset.Mappings.TryGetProperty<UsmapProperty>(entry.Name, entry.Ancestry, entry.ArrayIndex, asset, out _, out int idx)) throw new FormatException("No valid property \"" + entry.Name.ToString() + "\" in class " + entry.Ancestry.Parent.ToString());
+                if (!asset.Mappings.TryGetProperty<UsmapProperty>(entry.Name, entry.Ancestry, entry.ArrayIndex, asset, out _, out int idx))
+                    throw new FormatException("No valid property \"" + entry.Name.ToString() + "\" in class " + entry.Ancestry.Parent.ToString());
                 propMap[idx] = entry;
                 if (entry.CanBeZero(asset) && entry.IsZero) zeroProps.Add(idx);
-
-                if (idx < firstNumAll) firstNumAll = idx;
-                if (idx > lastNumAll) lastNumAll = idx;
-                propertiesToTouch.Add(idx);
             }
 
-            int lastNumBefore = -1;
-            List<FFragment> allFrags = new List<FFragment>();
-            if (propertiesToTouch.Count > 0)
+            // Get total number of schema properties to walk
+            IList<UsmapProperty> allSchemaProps = asset.Mappings.GetAllProperties(parentName?.ToString(), parentModulePath?.ToString(), asset);
+            int totalSchemaProps = allSchemaProps.Count;
+
+            // === FUnversionedHeaderBuilder pattern (mirrors UE 5.5.4) ===
+            // Walk all schema indices 0..totalSchemaProps-1, building fragments incrementally
+            List<FFragment> fragments = new List<FFragment>();
+            fragments.Add(new FFragment()); // start with one defaulted fragment
+            List<bool> zeroMaskBits = new List<bool>();
+            bool bHasNonZeroValues = false;
+            var sortedProps = new List<PropertyData>();
+
+            for (int schemaIdx = 0; schemaIdx < totalSchemaProps; schemaIdx++)
             {
-                while (true)
+                if (propMap.ContainsKey(schemaIdx))
                 {
-                    HashSet<int> fragmentHasAnyZeros = new HashSet<int>(); // add 0 if any zeros from 0 to (FFragment.ValueMax-1), 1 if any zeros from FFragment.ValueMax to (FFragment.ValueMax*2-1), etc.
+                    // IncludeProperty
+                    bool isZero = zeroProps.Contains(schemaIdx);
 
-                    int firstNum = lastNumBefore + 1;
-                    while (!propertiesToTouch.Contains(firstNum) && firstNum <= lastNumAll) firstNum++;
-                    if (firstNum > lastNumAll) break;
-
-#if DEBUGVERBOSE
-                    if (allFrags.Count > 0) Debug.WriteLine("W: " + allFrags[allFrags.Count - 1]);
-#endif
-
-                    int lastNum = firstNum;
-                    while (propertiesToTouch.Contains(lastNum))
+                    if (fragments[fragments.Count - 1].ValueNum == FFragment.ValueMax)
                     {
-                        if (zeroProps.Contains(lastNum))
-                        {
-                            int valueNum = lastNum - firstNum + 1;
-                            fragmentHasAnyZeros.Add(valueNum / FFragment.ValueMax);
-                        }
-                        sortedProps.Add(propMap[lastNum]);
-
-                        lastNum++;
-                    }
-                    lastNum--;
-
-                    var newFrag = FFragment.GetFromBounds(lastNumBefore, firstNum, lastNum, fragmentHasAnyZeros.Contains(0), false);
-
-                    // add extra 127s if we went over the max for either skip or value
-                    while (newFrag.SkipNum > FFragment.SkipMax)
-                    {
-                        allFrags.Add(new FFragment(FFragment.SkipMax, 0, false, false));
-                        newFrag.SkipNum -= FFragment.SkipMax;
-                    }
-                    int fragIdx = 0;
-                    while (newFrag.ValueNum > FFragment.ValueMax)
-                    {
-                        allFrags.Add(new FFragment(newFrag.SkipNum, FFragment.ValueMax, false, fragmentHasAnyZeros.Contains(fragIdx), firstNum + FFragment.ValueMax * fragIdx));
-                        newFrag.ValueNum -= FFragment.ValueMax;
-                        newFrag.FirstNum += FFragment.ValueMax;
-                        newFrag.SkipNum = 0;
-                        newFrag.bHasAnyZeroes = fragmentHasAnyZeros.Contains(++fragIdx);
+                        // TrimZeroMask: remove zero-mask bits for fragments without any zeroes
+                        TrimZeroMask(fragments[fragments.Count - 1], zeroMaskBits);
+                        fragments.Add(new FFragment());
                     }
 
-                    allFrags.Add(newFrag);
-                    lastNumBefore = lastNum;
-                }
-                allFrags[allFrags.Count - 1].bIsLast = true;
-#if DEBUGVERBOSE
-                Debug.WriteLine("W: " + allFrags[allFrags.Count - 1]);
-#endif
-            }
-            else
-            {
-                // add "blank" fragment
-                // i'm pretty sure that any SkipNum should work here as long as ValueNum = 0, but this is what the engine does
-                string highestSchema = parentName?.ToString();
+                    fragments[fragments.Count - 1].ValueNum++;
+                    fragments[fragments.Count - 1].bHasAnyZeroes |= isZero;
+                    zeroMaskBits.Add(isZero);
+                    bHasNonZeroValues |= !isZero;
 
-                // i doubt that this is true, empirically tested; need more data
-                int numSkip = 0;
-                if (asset.ObjectVersion >= ObjectVersion.VER_UE4_CORRECT_LICENSEE_FLAG)
-                {
-                    numSkip = Math.Min(asset.Mappings.GetAllProperties(highestSchema, parentModulePath?.ToString(), asset).Count, FFragment.SkipMax);
+                    sortedProps.Add(propMap[schemaIdx]);
                 }
                 else
                 {
-                    numSkip = asset.Mappings.Schemas[highestSchema].Properties.Count == 0 ? 0 : Math.Min(asset.Mappings.GetAllProperties(highestSchema, parentModulePath?.ToString(), asset).Count, FFragment.SkipMax);
+                    // ExcludeProperty
+                    if (fragments[fragments.Count - 1].ValueNum > 0 || fragments[fragments.Count - 1].SkipNum == FFragment.SkipMax)
+                    {
+                        TrimZeroMask(fragments[fragments.Count - 1], zeroMaskBits);
+                        fragments.Add(new FFragment());
+                    }
+
+                    fragments[fragments.Count - 1].SkipNum++;
                 }
-                allFrags.Add(new FFragment(numSkip, 0, true, false));
             }
 
-            // generate zero mask
-            bool bHasNonZeroValues = false;
-            List<bool> zeroMaskList = new List<bool>();
-            foreach (var frag in allFrags)
+            // Finalize: TrimZeroMask on last fragment, trim trailing skips, mark last
+            TrimZeroMask(fragments[fragments.Count - 1], zeroMaskBits);
+
+            // Trim trailing skip-only fragments
+            while (fragments.Count > 1 && fragments[fragments.Count - 1].ValueNum == 0)
             {
-                if (frag.bHasAnyZeroes)
-                {
-                    for (int i = 0; i < frag.ValueNum; i++)
-                    {
-                        bool isZero = zeroProps.Contains(frag.FirstNum + i);
-                        if (!isZero) bHasNonZeroValues = true;
-                        zeroMaskList.Add(isZero);
-                    }
-                }
+                fragments.RemoveAt(fragments.Count - 1);
             }
-            BitArray zeroMask = new BitArray(zeroMaskList.ToArray());
+
+            fragments[fragments.Count - 1].bIsLast = true;
+
+            // Assign FirstNum for each fragment (needed for read-side iteration)
+            int firstNum = 0;
+            for (int i = 0; i < fragments.Count; i++)
+            {
+                fragments[i].FirstNum = firstNum + fragments[i].SkipNum;
+                firstNum = fragments[i].FirstNum + fragments[i].ValueNum;
+            }
+
+#if DEBUGVERBOSE
+            foreach (var frag in fragments) Debug.WriteLine("W: " + frag);
+#endif
+
+            BitArray zeroMask = new BitArray(zeroMaskBits.ToArray());
 
             var res = new FUnversionedHeader();
             res.Fragments = new LinkedList<FFragment>();
-            foreach (var frag in allFrags) res.Fragments.AddLast(frag);
+            foreach (var frag in fragments) res.Fragments.AddLast(frag);
             res.ZeroMask = zeroMask;
             res.bHasNonZeroValues = bHasNonZeroValues;
             if (res.Fragments.Count > 0)
@@ -268,6 +245,19 @@ namespace UAssetAPI
             data.Clear();
             data.AddRange(sortedProps);
             return res;
+        }
+
+        /// <summary>
+        /// Mirrors UE's FUnversionedHeaderBuilder::TrimZeroMask.
+        /// If figure has no zeroes, remove its zero-mask bits from the end of the list.
+        /// </summary>
+        private static void TrimZeroMask(FFragment fragment, List<bool> zeroMaskBits)
+        {
+            if (!fragment.bHasAnyZeroes && fragment.ValueNum > 0)
+            {
+                int removeCount = Math.Min(fragment.ValueNum, zeroMaskBits.Count);
+                zeroMaskBits.RemoveRange(zeroMaskBits.Count - removeCount, removeCount);
+            }
         }
 
         /// <summary>
