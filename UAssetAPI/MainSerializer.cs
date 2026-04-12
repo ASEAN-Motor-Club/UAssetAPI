@@ -277,7 +277,7 @@ namespace UAssetAPI
         /// <param name="isZero">Is the body of this property empty?</param>
         /// <param name="propertyTypeName">The complete property type name, if available.</param>
         /// <returns>A new PropertyData instance based off of the passed parameters.</returns>
-        public static PropertyData TypeToClass(FName type, FName name, AncestryInfo ancestry, FName parentName, FName parentModulePath, UAsset asset, AssetBinaryReader reader = null, int leng = 0, EPropertyTagFlags propertyTagFlags = EPropertyTagFlags.None, int ArrayIndex = 0, bool includeHeader = true, bool isZero = false, FPropertyTypeName propertyTypeName = null)
+        public static PropertyData TypeToClass(FName type, FName name, AncestryInfo ancestry, FName parentName, FName parentModulePath, UAsset asset, AssetBinaryReader reader = null, int leng = 0, EPropertyTagFlags propertyTagFlags = EPropertyTagFlags.None, int ArrayIndex = 0, bool includeHeader = true, bool isZero = false, FPropertyTypeName propertyTypeName = null, PropertySerializationContext propContext = PropertySerializationContext.Normal)
         {
             long startingOffset = 0;
             if (reader != null) startingOffset = reader.BaseStream.Position;
@@ -340,7 +340,7 @@ namespace UAssetAPI
                 long posBefore = reader.BaseStream.Position;
                 try
                 {
-                    data.Read(reader, includeHeader, leng);
+                    data.Read(reader, includeHeader, leng, 0, propContext);
                 }
                 catch (Exception)
                 {
@@ -353,7 +353,7 @@ namespace UAssetAPI
                         data.Ancestry.Initialize(ancestry, parentName, parentModulePath);
                         data.ArrayIndex = ArrayIndex;
                         data.PropertyTypeName = propertyTypeName;
-                        data.Read(reader, includeHeader, leng);
+                        data.Read(reader, includeHeader, leng, 0, propContext);
                     }
                     else
                     {
@@ -427,6 +427,7 @@ namespace UAssetAPI
 
                     if (relevantSchema == null) throw new FormatException("Failed to find a valid property for schema index " + header.UnversionedPropertyIndex + " in the class " + parentName.ToString());
                 }
+
                 UsmapProperty relevantProperty = relevantSchema.Properties[practicingUnversionedPropertyIndex];
                 header.UnversionedPropertyIndex += 1;
 
@@ -469,7 +470,12 @@ namespace UAssetAPI
                 ArrayIndex = reader.ReadInt32();
             }
 
-            PropertyData result = TypeToClass(type, name, ancestry, parentName, parentModulePath, reader.Asset, reader, leng, propertyTagFlags, ArrayIndex, includeHeader, isZero, typeName);
+            PropertySerializationContext propContext = PropertySerializationContext.Normal;
+            if (reader.Asset.HasUnversionedProperties && header != null && header.IsTopLevel)
+            {
+                propContext = PropertySerializationContext.CdoTopLevel;
+            }
+            PropertyData result = TypeToClass(type, name, ancestry, parentName, parentModulePath, reader.Asset, reader, leng, propertyTagFlags, ArrayIndex, includeHeader, isZero, typeName, propContext);
             if (structType != null && result is StructPropertyData strucProp) strucProp.StructType = FName.DefineDummy(reader.Asset, structType);
             result.Offset = startingOffset;
             //Debug.WriteLine(type);
@@ -559,7 +565,7 @@ namespace UAssetAPI
         /// <param name="writer">The BinaryWriter to serialize the property to.</param>
         /// <param name="includeHeader">Does this property serialize its header in the current context?</param>
         /// <returns>The serial offset where the length of the property is stored.</returns>
-        public static int Write(PropertyData property, AssetBinaryWriter writer, bool includeHeader)
+        public static int Write(PropertyData property, AssetBinaryWriter writer, bool includeHeader, PropertySerializationContext propContext = PropertySerializationContext.Normal)
         {
             if (property == null) return -1;
 
@@ -567,7 +573,7 @@ namespace UAssetAPI
 
             if (writer.Asset.HasUnversionedProperties)
             {
-                if (!property.IsZero || !property.CanBeZero(writer.Asset)) property.Write(writer, includeHeader);
+                if (!property.IsZero || !property.CanBeZero(writer.Asset)) property.Write(writer, includeHeader, propContext);
                 return -1; // length is not serialized
             }
             else if (writer.Asset.ObjectVersionUE5 >= ObjectVersionUE5.PROPERTY_TAG_COMPLETE_TYPE_NAME)

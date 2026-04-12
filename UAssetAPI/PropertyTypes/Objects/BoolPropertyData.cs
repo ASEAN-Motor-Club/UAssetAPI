@@ -18,7 +18,18 @@ public class BoolPropertyData : PropertyData<bool>
 
     public override void Read(AssetBinaryReader reader, bool includeHeader, long leng1, long leng2 = 0, PropertySerializationContext serializationContext = PropertySerializationContext.Normal)
     {
-        if (reader.Asset.HasUnversionedProperties || reader.Asset.ObjectVersionUE5 < ObjectVersionUE5.PROPERTY_TAG_COMPLETE_TYPE_NAME)
+        if (reader.Asset.HasUnversionedProperties)
+        {
+            if (serializationContext == PropertySerializationContext.CdoTopLevel)
+            {
+                Value = !IsZero;
+            }
+            else
+            {
+                Value = reader.ReadBoolean();
+            }
+        }
+        else if (reader.Asset.ObjectVersionUE5 < ObjectVersionUE5.PROPERTY_TAG_COMPLETE_TYPE_NAME)
         {
             Value = reader.ReadBoolean();
         }
@@ -37,7 +48,18 @@ public class BoolPropertyData : PropertyData<bool>
 
     public override int Write(AssetBinaryWriter writer, bool includeHeader, PropertySerializationContext serializationContext = PropertySerializationContext.Normal)
     {
-        if (writer.Asset.HasUnversionedProperties || writer.Asset.ObjectVersionUE5 < ObjectVersionUE5.PROPERTY_TAG_COMPLETE_TYPE_NAME)
+        if (writer.Asset.HasUnversionedProperties)
+        {
+            if (serializationContext == PropertySerializationContext.CdoTopLevel)
+            {
+                // encoded in ZeroMask, no stream bytes
+            }
+            else
+            {
+                writer.Write(Value);
+            }
+        }
+        else if (writer.Asset.ObjectVersionUE5 < ObjectVersionUE5.PROPERTY_TAG_COMPLETE_TYPE_NAME)
         {
             writer.Write(Value);
         }
