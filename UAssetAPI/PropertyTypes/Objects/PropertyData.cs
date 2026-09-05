@@ -11,7 +11,8 @@ namespace UAssetAPI.PropertyTypes.Objects
         Normal,
         Array,
         Map,
-        StructFallback // a StructPropertyData with custom struct serialization falling back to standard serialization before/after reading custom data
+        StructFallback,
+        CdoTopLevel
     }
 
     [Flags]

@@ -39,7 +39,7 @@ public class EnumPropertyData : PropertyData<FName>
             InnerType = reader.Asset.HasUnversionedProperties ? FName.DefineDummy(reader.Asset, enumDat1.InnerType.Type.ToString()) : new FName(reader.Asset, enumDat1.Name);
         }
 
-        if (reader.Asset.HasUnversionedProperties && serializationContext == PropertySerializationContext.Normal)
+        if (reader.Asset.HasUnversionedProperties && (serializationContext == PropertySerializationContext.Normal || serializationContext == PropertySerializationContext.CdoTopLevel))
         {
             Value = null;
             if (InnerType?.Value.Value == "ByteProperty" || InnerType?.Value.Value == "UInt16Property" || InnerType?.Value.Value == "UInt32Property")
@@ -135,13 +135,20 @@ public class EnumPropertyData : PropertyData<FName>
             InnerType = writer.Asset.HasUnversionedProperties ? FName.DefineDummy(writer.Asset, enumDat1.InnerType.Type.ToString()) : new FName(writer.Asset, enumDat1.Name);
         }
 
-        if (writer.Asset.HasUnversionedProperties && serializationContext == PropertySerializationContext.Normal)
+        if (writer.Asset.HasUnversionedProperties && (serializationContext == PropertySerializationContext.Normal || serializationContext == PropertySerializationContext.CdoTopLevel))
         {
             if (ValidEnumInnerTypeList.Contains(InnerType?.Value?.Value))
             {
                 long enumIndice = 0;
                 var listOfEnums = writer.Asset.Mappings.EnumMap[EnumType.Value.Value].Values;
-                var validIndices = listOfEnums.Where(pair => pair.Value == Value.Value.Value).Select(pair => pair.Key);
+                // usmap enum tables store values BARE ("Container") while
+                // nametagged assets carry them QUALIFIED ("EDeliveryCargoType::Container").
+                // Match either form so round-trips across both encodings work.
+                var fullEnumName = Value?.Value?.Value;
+                var bareEnumName = fullEnumName != null && fullEnumName.Contains("::")
+                    ? fullEnumName.Substring(fullEnumName.LastIndexOf("::", StringComparison.Ordinal) + 2)
+                    : fullEnumName;
+                var validIndices = listOfEnums.Where(pair => pair.Value == fullEnumName || pair.Value == bareEnumName).Select(pair => pair.Key);
                 if (Value == null)
                 {
                     enumIndice = -1;
@@ -152,6 +159,21 @@ public class EnumPropertyData : PropertyData<FName>
                     if (Value.Value.Value.StartsWith(InvalidEnumIndexFallbackPrefix))
                     {
                         success = long.TryParse(Value.Value.Value.Substring(InvalidEnumIndexFallbackPrefix.Length), out enumIndice);
+                    }
+
+                    // UE5 strips zero-valued entries from unversioned enum tables;
+                    // the canonical zero entry is "<EnumType>::None" (or bare "None").
+                    // Resolve it to 0 instead of throwing.
+                    if (!success)
+                    {
+                        var enumVal = Value.Value.Value;
+                        var sep = enumVal.LastIndexOf("::", StringComparison.Ordinal);
+                        var suffix = sep >= 0 ? enumVal.Substring(sep + 2) : enumVal;
+                        if (suffix == "None")
+                        {
+                            enumIndice = 0;
+                            success = true;
+                        }
                     }
 
                     if (!success)

@@ -1,5 +1,6 @@
 using Newtonsoft.Json;
 using System;
+using System.IO;
 using System.Linq;
 using UAssetAPI.JSON;
 using UAssetAPI.PropertyTypes.Structs;
@@ -148,6 +149,10 @@ public class MapPropertyData : PropertyData
         }
 
         int numKeysToRemove = reader.ReadInt32();
+        if (numKeysToRemove < 0 || numKeysToRemove > 1000000)
+        {
+            throw new FormatException($"MapProperty {Name?.Value?.Value}: invalid numKeysToRemove={numKeysToRemove}");
+        }
         KeysToRemove = new PropertyData[numKeysToRemove];
         for (int i = 0; i < numKeysToRemove; i++)
         {

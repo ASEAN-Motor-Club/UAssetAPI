@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using System;
 using System.Collections;
@@ -1029,7 +1029,8 @@ namespace UAssetAPI
             catch (Exception ex)
             {
 #if DEBUGVERBOSE
-                Console.WriteLine("\nFailed to parse export " + (i + 1) + ": " + ex.ToString());
+                Console.WriteLine("\nFailed to parse export " + (i + 1) + " (" + Exports[i].ObjectName?.Value?.Value + "): " + ex.GetType().Name + ": " + ex.Message);
+                Console.WriteLine("StackTrace: " + ex.StackTrace?.Substring(0, Math.Min(800, ex.StackTrace?.Length ?? 0)));
 #endif
                 if (read) reader.BaseStream.Seek(Exports[i].SerialOffset, SeekOrigin.Begin);
                 Exports[i] = Exports[i].ConvertToChildExport<RawExport>();

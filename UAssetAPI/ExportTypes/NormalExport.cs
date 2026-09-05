@@ -141,6 +141,7 @@ namespace UAssetAPI.ExportTypes
             PropertyData bit;
 
             var unversionedHeader = new FUnversionedHeader(reader);
+            unversionedHeader.IsTopLevel = this.ObjectFlags.HasFlag(EObjectFlags.RF_ClassDefaultObject);
             if (!reader.Asset.HasUnversionedProperties && reader.Asset.ObjectVersionUE5 >= ObjectVersionUE5.PROPERTY_TAG_EXTENSION_AND_OVERRIDABLE_SERIALIZATION)
             {
                 SerializationControl = (EClassSerializationControlExtension)reader.ReadByte();
@@ -182,7 +183,10 @@ namespace UAssetAPI.ExportTypes
 
             FName parentName = GetClassTypeForAncestry(writer.Asset, out FName parentModulePath);
 
-            MainSerializer.GenerateUnversionedHeader(ref Data, parentName, parentModulePath, writer.Asset)?.Write(writer);
+            bool isCdo = this.ObjectFlags.HasFlag(EObjectFlags.RF_ClassDefaultObject);
+            FUnversionedHeader unversionedHeader = MainSerializer.GenerateUnversionedHeader(ref Data, parentName, parentModulePath, writer.Asset);
+            if (unversionedHeader != null) unversionedHeader.IsTopLevel = isCdo;
+            unversionedHeader?.Write(writer);
 
             if (!writer.Asset.HasUnversionedProperties && writer.Asset.ObjectVersionUE5 >= ObjectVersionUE5.PROPERTY_TAG_EXTENSION_AND_OVERRIDABLE_SERIALIZATION)
             {
@@ -194,10 +198,11 @@ namespace UAssetAPI.ExportTypes
                 }
             }
 
+            var writeContext = isCdo ? PropertySerializationContext.CdoTopLevel : PropertySerializationContext.Normal;
             for (int j = 0; j < Data.Count; j++)
             {
                 PropertyData current = Data[j];
-                MainSerializer.Write(current, writer, true);
+                MainSerializer.Write(current, writer, true, writeContext);
             }
             if (!writer.Asset.HasUnversionedProperties) writer.Write(new FName(writer.Asset, "None"));
 

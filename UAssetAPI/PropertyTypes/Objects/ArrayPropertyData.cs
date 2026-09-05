@@ -301,5 +301,12 @@ public class ArrayPropertyData : PropertyData<PropertyData[]>
         ArrayPropertyData cloningProperty = (ArrayPropertyData)res;
         cloningProperty.ArrayType = (FName)this.ArrayType?.Clone();
         cloningProperty.DummyStruct = (StructPropertyData)this.DummyStruct?.Clone();
+        if (this.Value != null)
+        {
+            var newArr = new PropertyData[this.Value.Length];
+            for (int i = 0; i < this.Value.Length; i++)
+                newArr[i] = (PropertyData)this.Value[i].Clone();
+            cloningProperty.Value = newArr;
+        }
     }
 }
