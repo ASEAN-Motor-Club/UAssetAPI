@@ -469,7 +469,7 @@ namespace UAssetAPI
             if (isSerializationTime) throw new InvalidOperationException("Attempt to add name \"" + name + "\" to name map during serialization time");
             nameMapIndexList.Add(name);
             nameMapLookup[name.Value] = nameMapIndexList.Count - 1;
-            if (!skipFixes) NamesReferencedFromExportDataCount = nameMapIndexList.Count; // needed for conversion to zen to include new names added by modders
+            if (!skipFixes && NamesReferencedFromExportDataCount == nameMapIndexList.Count - 1) NamesReferencedFromExportDataCount = nameMapIndexList.Count; // only bump for legacy (non-split) name maps; UE5.4+ split maps keep the original export-data reference count
             return nameMapIndexList.Count - 1;
         }
 
@@ -1032,6 +1032,7 @@ namespace UAssetAPI
                 Console.WriteLine("\nFailed to parse export " + (i + 1) + " (" + Exports[i].ObjectName?.Value?.Value + "): " + ex.GetType().Name + ": " + ex.Message);
                 Console.WriteLine("StackTrace: " + ex.StackTrace?.Substring(0, Math.Min(800, ex.StackTrace?.Length ?? 0)));
 #endif
+                Console.Error.WriteLine("[uasset-debug] export " + (i + 1) + " (" + Exports[i].ObjectName?.Value?.Value + ") parse failed: " + ex.GetType().Name + ": " + ex.Message + "\n" + ex.StackTrace?.Substring(0, Math.Min(1200, ex.StackTrace?.Length ?? 0)));
                 if (read) reader.BaseStream.Seek(Exports[i].SerialOffset, SeekOrigin.Begin);
                 Exports[i] = Exports[i].ConvertToChildExport<RawExport>();
                 if (read) ((RawExport)Exports[i]).Data = reader.ReadBytes((int)Exports[i].SerialSize);
