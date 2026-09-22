@@ -178,6 +178,7 @@ public class ArrayPropertyData : PropertyData<PropertyData[]>
             for (int i = 0; i < numEntries; i++)
             {
                 results[i] = MainSerializer.TypeToClass(ArrayType, FName.DefineDummy(reader.Asset, i.ToString(), int.MinValue), Ancestry, Name, null, reader.Asset, propertyTypeName: propTypeName);
+                if (results[i] == null) Console.Error.WriteLine("[uasset-debug] ArrayPropertyData entry ctor returned null: array=" + Name.Value.Value + " ArrayType=" + ArrayType?.Value?.Value + " ancestry=" + Ancestry.Parent?.Value?.Value);
                 results[i].Offset = reader.BaseStream.Position;
                 if (results[i] is StructPropertyData data) data.StructType = arrayStructType == null ? FName.DefineDummy(reader.Asset, "Generic") : arrayStructType;
                 results[i].Read(reader, false, averageSizeEstimate, 0, PropertySerializationContext.Array);

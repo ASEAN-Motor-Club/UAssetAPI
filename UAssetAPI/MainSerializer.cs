@@ -564,6 +564,77 @@ namespace UAssetAPI
         }
 
         /// <summary>
+        /// Builds a complete UE5.5 property type name for programmatically
+        /// created properties. Parameterized types (arrays, maps, structs)
+        /// MUST carry their inner types as tag parameters — a bare
+        /// "ArrayProperty" tag makes the property unreadable on reparse
+        /// (ArrayType resolves to None and the entry loop NREs).
+        /// </summary>
+        static FPropertyTypeName SynthesizePropertyTypeName(PropertyData property, UAsset asset)
+        {
+            var nodes = new List<FPropertyTypeNameNode>();
+            void Add(string name, int innerCount)
+            {
+                // Names must already exist in the asset name map at write time
+                // (patch ops add them via FName.FromString before writing).
+                int idx = asset.SearchNameReference(new FString(name));
+                if (idx < 0)
+                    throw new FormatException("SynthesizePropertyTypeName: '" + name + "' missing from asset name map — add it via FName.FromString before writing");
+                nodes.Add(new FPropertyTypeNameNode { Name = new FName(asset, idx, 0), InnerCount = innerCount });
+            }
+
+            switch (property)
+            {
+                case MapPropertyData map:
+                {
+                    PropertyData firstKey = null, firstVal = null;
+                    if (map.Value != null)
+                        foreach (var kvp in map.Value) { firstKey = kvp.Key; firstVal = kvp.Value; break; }
+                    var keyType = map.KeyType?.Value?.Value ?? firstKey?.PropertyType?.Value ?? "ObjectProperty";
+                    var valType = map.ValueType?.Value?.Value ?? firstVal?.PropertyType?.Value ?? "ObjectProperty";
+                    Add("MapProperty", 2);
+                    Add(keyType, keyType == "StructProperty" ? 1 : 0);
+                    if (keyType == "StructProperty")
+                        Add((firstKey as StructPropertyData)?.StructType?.Value?.Value ?? "Generic", 0);
+                    Add(valType, valType == "StructProperty" ? 1 : 0);
+                    if (valType == "StructProperty")
+                        Add((firstVal as StructPropertyData)?.StructType?.Value?.Value ?? "Generic", 0);
+                    break;
+                }
+                case ArrayPropertyData arr:
+                {
+                    PropertyData first = null;
+                    if (arr.Value is PropertyData[] entries && entries.Length > 0) first = entries[0];
+                    var innerType = arr.ArrayType?.Value?.Value;
+                    if (string.IsNullOrEmpty(innerType) || innerType == "None")
+                    {
+                        if (first != null) innerType = first.PropertyType?.Value;
+                        else if (arr.DummyStruct?.StructType?.Value?.Value != null) innerType = "StructProperty";
+                        else innerType = "ObjectProperty";
+                    }
+                    Add("ArrayProperty", 1);
+                    Add(innerType, innerType == "StructProperty" ? 1 : 0);
+                    if (innerType == "StructProperty")
+                    {
+                        var st = (first as StructPropertyData)?.StructType?.Value?.Value
+                            ?? arr.DummyStruct?.StructType?.Value?.Value ?? "Generic";
+                        Add(st, 0);
+                    }
+                    break;
+                }
+                case StructPropertyData sp:
+                    Add("StructProperty", 1);
+                    Add(sp.StructType?.Value?.Value ?? "Generic", 0);
+                    break;
+                default:
+                    Add(property.PropertyType?.Value, 0);
+                    break;
+            }
+
+            return new FPropertyTypeName(nodes, true);
+        }
+
+        /// <summary>
         /// Serializes a property from memory.
         /// </summary>
         /// <param name="property">The property to serialize.</param>
@@ -594,14 +665,8 @@ namespace UAssetAPI
                     if (property.PropertyTypeName == null)
                     {
                         // Programmatically created property without a type name
-                        // (UE5.5+ nametagged serialization requires it). Resolve
-                        // from the existing name map; never add during serialization.
-                        var typeStr = property.PropertyType;
-                        int tIdx = writer.Asset.SearchNameReference(typeStr);
-                        property.PropertyTypeName = new FPropertyTypeName(new List<FPropertyTypeNameNode>
-                        {
-                            new FPropertyTypeNameNode { Name = new FName(writer.Asset, tIdx >= 0 ? tIdx : 0, 0), InnerCount = 0 }
-                        });
+                        // (UE5.5+ nametagged serialization requires it).
+                        property.PropertyTypeName = SynthesizePropertyTypeName(property, writer.Asset);
                     }
                     property.PropertyTypeName.Write(writer);
                 }
