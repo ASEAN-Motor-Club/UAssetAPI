@@ -277,7 +277,7 @@ namespace UAssetAPI
         /// <param name="isZero">Is the body of this property empty?</param>
         /// <param name="propertyTypeName">The complete property type name, if available.</param>
         /// <returns>A new PropertyData instance based off of the passed parameters.</returns>
-        public static PropertyData TypeToClass(FName type, FName name, AncestryInfo ancestry, FName parentName, FName parentModulePath, UAsset asset, AssetBinaryReader reader = null, int leng = 0, EPropertyTagFlags propertyTagFlags = EPropertyTagFlags.None, int ArrayIndex = 0, bool includeHeader = true, bool isZero = false, FPropertyTypeName propertyTypeName = null)
+        public static PropertyData TypeToClass(FName type, FName name, AncestryInfo ancestry, FName parentName, FName parentModulePath, UAsset asset, AssetBinaryReader reader = null, int leng = 0, EPropertyTagFlags propertyTagFlags = EPropertyTagFlags.None, int ArrayIndex = 0, bool includeHeader = true, bool isZero = false, FPropertyTypeName propertyTypeName = null, PropertySerializationContext propContext = PropertySerializationContext.Normal)
         {
             long startingOffset = 0;
             if (reader != null) startingOffset = reader.BaseStream.Position;
@@ -340,7 +340,7 @@ namespace UAssetAPI
                 long posBefore = reader.BaseStream.Position;
                 try
                 {
-                    data.Read(reader, includeHeader, leng);
+                    data.Read(reader, includeHeader, leng, 0, propContext);
                 }
                 catch (Exception)
                 {
@@ -353,7 +353,7 @@ namespace UAssetAPI
                         data.Ancestry.Initialize(ancestry, parentName, parentModulePath);
                         data.ArrayIndex = ArrayIndex;
                         data.PropertyTypeName = propertyTypeName;
-                        data.Read(reader, includeHeader, leng);
+                        data.Read(reader, includeHeader, leng, 0, propContext);
                     }
                     else
                     {
@@ -425,8 +425,14 @@ namespace UAssetAPI
                         relevantSchema = null;
                     }
 
-                    if (relevantSchema == null) throw new FormatException("Failed to find a valid property for schema index " + header.UnversionedPropertyIndex + " in the class " + parentName.ToString());
+                    if (relevantSchema == null)
+                    {
+                        Console.WriteLine($"  WARNING: Skipping unknown property at schema index {header.UnversionedPropertyIndex} in class {parentName}");
+                        header.UnversionedPropertyIndex += 1;
+                        return null;
+                    }
                 }
+
                 UsmapProperty relevantProperty = relevantSchema.Properties[practicingUnversionedPropertyIndex];
                 header.UnversionedPropertyIndex += 1;
 
@@ -469,7 +475,12 @@ namespace UAssetAPI
                 ArrayIndex = reader.ReadInt32();
             }
 
-            PropertyData result = TypeToClass(type, name, ancestry, parentName, parentModulePath, reader.Asset, reader, leng, propertyTagFlags, ArrayIndex, includeHeader, isZero, typeName);
+            PropertySerializationContext propContext = PropertySerializationContext.Normal;
+            if (reader.Asset.HasUnversionedProperties && header != null && header.IsTopLevel)
+            {
+                propContext = PropertySerializationContext.CdoTopLevel;
+            }
+            PropertyData result = TypeToClass(type, name, ancestry, parentName, parentModulePath, reader.Asset, reader, leng, propertyTagFlags, ArrayIndex, includeHeader, isZero, typeName, propContext);
             if (structType != null && result is StructPropertyData strucProp) strucProp.StructType = FName.DefineDummy(reader.Asset, structType);
             result.Offset = startingOffset;
             //Debug.WriteLine(type);
@@ -553,13 +564,84 @@ namespace UAssetAPI
         }
 
         /// <summary>
+        /// Builds a complete UE5.5 property type name for programmatically
+        /// created properties. Parameterized types (arrays, maps, structs)
+        /// MUST carry their inner types as tag parameters — a bare
+        /// "ArrayProperty" tag makes the property unreadable on reparse
+        /// (ArrayType resolves to None and the entry loop NREs).
+        /// </summary>
+        static FPropertyTypeName SynthesizePropertyTypeName(PropertyData property, UAsset asset)
+        {
+            var nodes = new List<FPropertyTypeNameNode>();
+            void Add(string name, int innerCount)
+            {
+                // Names must already exist in the asset name map at write time
+                // (patch ops add them via FName.FromString before writing).
+                int idx = asset.SearchNameReference(new FString(name));
+                if (idx < 0)
+                    throw new FormatException("SynthesizePropertyTypeName: '" + name + "' missing from asset name map — add it via FName.FromString before writing");
+                nodes.Add(new FPropertyTypeNameNode { Name = new FName(asset, idx, 0), InnerCount = innerCount });
+            }
+
+            switch (property)
+            {
+                case MapPropertyData map:
+                {
+                    PropertyData firstKey = null, firstVal = null;
+                    if (map.Value != null)
+                        foreach (var kvp in map.Value) { firstKey = kvp.Key; firstVal = kvp.Value; break; }
+                    var keyType = map.KeyType?.Value?.Value ?? firstKey?.PropertyType?.Value ?? "ObjectProperty";
+                    var valType = map.ValueType?.Value?.Value ?? firstVal?.PropertyType?.Value ?? "ObjectProperty";
+                    Add("MapProperty", 2);
+                    Add(keyType, keyType == "StructProperty" ? 1 : 0);
+                    if (keyType == "StructProperty")
+                        Add((firstKey as StructPropertyData)?.StructType?.Value?.Value ?? "Generic", 0);
+                    Add(valType, valType == "StructProperty" ? 1 : 0);
+                    if (valType == "StructProperty")
+                        Add((firstVal as StructPropertyData)?.StructType?.Value?.Value ?? "Generic", 0);
+                    break;
+                }
+                case ArrayPropertyData arr:
+                {
+                    PropertyData first = null;
+                    if (arr.Value is PropertyData[] entries && entries.Length > 0) first = entries[0];
+                    var innerType = arr.ArrayType?.Value?.Value;
+                    if (string.IsNullOrEmpty(innerType) || innerType == "None")
+                    {
+                        if (first != null) innerType = first.PropertyType?.Value;
+                        else if (arr.DummyStruct?.StructType?.Value?.Value != null) innerType = "StructProperty";
+                        else innerType = "ObjectProperty";
+                    }
+                    Add("ArrayProperty", 1);
+                    Add(innerType, innerType == "StructProperty" ? 1 : 0);
+                    if (innerType == "StructProperty")
+                    {
+                        var st = (first as StructPropertyData)?.StructType?.Value?.Value
+                            ?? arr.DummyStruct?.StructType?.Value?.Value ?? "Generic";
+                        Add(st, 0);
+                    }
+                    break;
+                }
+                case StructPropertyData sp:
+                    Add("StructProperty", 1);
+                    Add(sp.StructType?.Value?.Value ?? "Generic", 0);
+                    break;
+                default:
+                    Add(property.PropertyType?.Value, 0);
+                    break;
+            }
+
+            return new FPropertyTypeName(nodes, true);
+        }
+
+        /// <summary>
         /// Serializes a property from memory.
         /// </summary>
         /// <param name="property">The property to serialize.</param>
         /// <param name="writer">The BinaryWriter to serialize the property to.</param>
         /// <param name="includeHeader">Does this property serialize its header in the current context?</param>
         /// <returns>The serial offset where the length of the property is stored.</returns>
-        public static int Write(PropertyData property, AssetBinaryWriter writer, bool includeHeader)
+        public static int Write(PropertyData property, AssetBinaryWriter writer, bool includeHeader, PropertySerializationContext propContext = PropertySerializationContext.Normal)
         {
             if (property == null) return -1;
 
@@ -567,7 +649,7 @@ namespace UAssetAPI
 
             if (writer.Asset.HasUnversionedProperties)
             {
-                if (!property.IsZero || !property.CanBeZero(writer.Asset)) property.Write(writer, includeHeader);
+                if (!property.IsZero || !property.CanBeZero(writer.Asset)) property.Write(writer, includeHeader, propContext);
                 return -1; // length is not serialized
             }
             else if (writer.Asset.ObjectVersionUE5 >= ObjectVersionUE5.PROPERTY_TAG_COMPLETE_TYPE_NAME)
@@ -580,6 +662,12 @@ namespace UAssetAPI
                 }
                 else
                 {
+                    if (property.PropertyTypeName == null)
+                    {
+                        // Programmatically created property without a type name
+                        // (UE5.5+ nametagged serialization requires it).
+                        property.PropertyTypeName = SynthesizePropertyTypeName(property, writer.Asset);
+                    }
                     property.PropertyTypeName.Write(writer);
                 }
 

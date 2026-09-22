@@ -19,6 +19,7 @@ namespace UAssetAPI.Unversioned
         public uint ZeroMaskNum = 0;
         public BitArray ZeroMask;
         public bool bHasNonZeroValues = false;
+        public bool IsTopLevel = false;
 
         public void Read(AssetBinaryReader reader)
         {

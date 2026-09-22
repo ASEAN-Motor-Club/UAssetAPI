@@ -54,14 +54,30 @@ public class ArrayPropertyData : PropertyData<PropertyData[]>
             this.ReadEndPropertyTag(reader);
         }
 
+        // UE5.5 tags carry an array's inner type only in PropertyTypeName
+        // (PROPERTY_TAG_COMPLETE_TYPE_NAME); the block above skips that
+        // assignment whenever the asset is unversioned — which is exactly the
+        // case when a RawExport CDO is converted and its tagged data is
+        // re-read (PatchCdoArrays). Left unhandled, ArrayType stays at its
+        // "None" default, TypeToClass("None") returns null, and the entry
+        // loop NREs. Derive the inner type from the complete type name.
+        if ((ArrayType == null || ArrayType.Value.Value == "None") && PropertyTypeName != null)
+        {
+            var derivedInner = PropertyTypeName.GetParameter(0)?.GetName();
+            if (derivedInner != null && derivedInner.Value.Value != "None")
+            {
+                ArrayType = derivedInner;
+            }
+        }
+
         FName arrayStructType = null;
-        if (reader.Asset.Mappings != null && ArrayType == null && reader.Asset.Mappings.TryGetPropertyData(Name, Ancestry, reader.Asset, out UsmapArrayData strucDat1))
+        if (reader.Asset.Mappings != null && (ArrayType == null || ArrayType.Value.Value == "None") && reader.Asset.Mappings.TryGetPropertyData(Name, Ancestry, reader.Asset, out UsmapArrayData strucDat1))
         {
             ArrayType = FName.DefineDummy(reader.Asset, strucDat1.InnerType.Type.ToString());
             if (strucDat1.InnerType is UsmapStructData strucDat2) arrayStructType = FName.DefineDummy(reader.Asset, strucDat2.StructType);
         }
 
-        if (reader.Asset.HasUnversionedProperties && ArrayType == null)
+        if (reader.Asset.HasUnversionedProperties && (ArrayType == null || ArrayType.Value.Value == "None"))
         {
             throw new InvalidOperationException("Unable to determine array type for array " + Name.Value.Value + " in class " + Ancestry.Parent.Value.Value);
         }
@@ -162,6 +178,7 @@ public class ArrayPropertyData : PropertyData<PropertyData[]>
             for (int i = 0; i < numEntries; i++)
             {
                 results[i] = MainSerializer.TypeToClass(ArrayType, FName.DefineDummy(reader.Asset, i.ToString(), int.MinValue), Ancestry, Name, null, reader.Asset, propertyTypeName: propTypeName);
+                if (results[i] == null) Console.Error.WriteLine("[uasset-debug] ArrayPropertyData entry ctor returned null: array=" + Name.Value.Value + " ArrayType=" + ArrayType?.Value?.Value + " ancestry=" + Ancestry.Parent?.Value?.Value);
                 results[i].Offset = reader.BaseStream.Position;
                 if (results[i] is StructPropertyData data) data.StructType = arrayStructType == null ? FName.DefineDummy(reader.Asset, "Generic") : arrayStructType;
                 results[i].Read(reader, false, averageSizeEstimate, 0, PropertySerializationContext.Array);
@@ -301,5 +318,12 @@ public class ArrayPropertyData : PropertyData<PropertyData[]>
         ArrayPropertyData cloningProperty = (ArrayPropertyData)res;
         cloningProperty.ArrayType = (FName)this.ArrayType?.Clone();
         cloningProperty.DummyStruct = (StructPropertyData)this.DummyStruct?.Clone();
+        if (this.Value != null)
+        {
+            var newArr = new PropertyData[this.Value.Length];
+            for (int i = 0; i < this.Value.Length; i++)
+                newArr[i] = (PropertyData)this.Value[i].Clone();
+            cloningProperty.Value = newArr;
+        }
     }
 }
